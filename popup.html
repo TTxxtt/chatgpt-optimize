@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>ChatGPT 提示词优化</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="head">
+      <h1>提示词优化 <small>独立版</small></h1>
+      <span class="tag">临时聊天 · 不留历史</span>
+    </header>
+
+    <section class="sec">
+      <h2>优化模式</h2>
+      <div class="mode-row" role="radiogroup" aria-label="优化模式">
+        <label class="seg"><input type="radio" name="opt-mode" id="opt-instant" value="instant"><span>Instant 快捷</span></label>
+        <label class="seg"><input type="radio" name="opt-mode" id="opt-thinking" value="thinking"><span>Thinking 思考</span></label>
+      </div>
+      <p class="hint tiny">思考模式 = 临时聊天里切换到 thinking 模型再改写。</p>
+    </section>
+
+    <section class="sec">
+      <h2>模板（{{prompt}} 会被替换为你的输入）</h2>
+      <p class="hint tiny"><b>新对话模板</b>（没有对话历史时）</p>
+      <textarea id="opt-tpl-new" rows="6" spellcheck="false"></textarea>
+      <p class="hint tiny"><b>对话中模板</b>（有历史时，自动填 <code>{{firstUser}}</code> <code>{{lastUser}}</code> <code>{{lastAssistant}}</code> 各 2000 字符）</p>
+      <textarea id="opt-tpl-inchat" rows="8" spellcheck="false"></textarea>
+      <div class="btn-row">
+        <button id="opt-tpl-save" class="btn" type="button">保存模板</button>
+        <button id="opt-tpl-reset" class="btn ghost" type="button">恢复默认</button>
+      </div>
+    </section>
+
+    <section class="sec">
+      <h2>怎么用</h2>
+      <ol class="steps">
+        <li>在 ChatGPT 输入框写好内容，点输入框下方的 <b>✨优化</b>（或按 <b>Alt+O</b>）</li>
+        <li>自动打开<b>官方临时聊天</b>标签（可见、不留历史），并发送改写任务</li>
+        <li>对话结束自动<b>切回原页面</b>，结果已填入输入框</li>
+        <li>顶部确认条：<b>回车 = 确认</b>，<b>Esc = 还原原文</b></li>
+        <li>运行中可点按钮或按 Esc 取消（会还原原文并关闭临时聊天）</li>
+      </ol>
+    </section>
+
+    <footer class="foot">
+      <span id="status"></span>
+      本地自用版 · 数据仅存本机
+    </footer>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
