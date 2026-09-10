@@ -24,8 +24,8 @@ chatgpt-optimize/
 
 ### 方式 1：本机直接加载（推荐，最快）
 
-1. Chrome 打开 `chrome://extensions`
-2. 右上角打开 **开发者模式**
+1. Chrome 打开 `chrome://extensions`，edge打开`edge://extensions/`
+2. 打开 **开发者模式**
 3. 点 **加载已解压的扩展程序** → 选择本仓库的 `src` 文件夹
 4. 打开/刷新 `chatgpt.com` → **输入框下方出现「✨优化」**
 
