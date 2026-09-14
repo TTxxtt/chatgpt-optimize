@@ -197,6 +197,20 @@ async function domFallback(tabId) {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || !msg.type) return;
 
+  /* 诊断用：确认后台 service worker 是否活着、是否有卡住的优化任务 */
+  if (msg.type === 'OPT_PING') {
+    sendResponse({
+      ok: true,
+      后台: '存活',
+      版本: chrome.runtime.getManifest().version,
+      有运行中的任务: !!_workerTabId,
+      临时聊天页: _workerTabId,
+      发起页: _openerTabId,
+      已被请求取消: _abort
+    });
+    return true;
+  }
+
   if (msg.type === 'OPT_OPTIMIZE_PROMPT') {
     const openerTab = sender && sender.tab;
     _openerTabId = openerTab && typeof openerTab.id === 'number' ? openerTab.id : null;

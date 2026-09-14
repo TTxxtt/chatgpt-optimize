@@ -35,6 +35,18 @@
     </section>
 
     <section class="sec">
+      <h2>诊断</h2>
+      <label class="seg" style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" id="opt-diag"><span>诊断模式：点「优化」只输出诊断报告，不改写</span>
+      </label>
+      <p class="hint tiny">用于排查「请等 ChatGPT 回复结束后再优化」这类误报。打开后到 ChatGPT 页面点一次「优化」，把弹出的报告截图发我即可。</p>
+      <div class="btn-row">
+        <button id="opt-diag-view" class="btn" type="button">查看上次报告</button>
+      </div>
+      <textarea id="opt-diag-out" rows="8" spellcheck="false" readonly placeholder="（暂无报告）"></textarea>
+    </section>
+
+    <section class="sec">
       <h2>怎么用</h2>
       <ol class="steps">
         <li>在 ChatGPT 输入框写好内容，点输入框下方的 <b>✨优化</b>（或按 <b>Alt+O</b>）</li>

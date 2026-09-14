@@ -54,6 +54,28 @@ function init() {
     $('opt-tpl-inchat').value = DEFAULT_TPL_IN_CHAT;
     chrome.storage.local.remove(['optTplNew', 'optTplInChat'], () => status('已恢复默认。', 1200));
   });
+
+  /* 诊断模式开关 */
+  chrome.storage.local.get({ optDiag: false }, (r) => { $('opt-diag').checked = !!r.optDiag; });
+  $('opt-diag').addEventListener('change', () => {
+    const on = $('opt-diag').checked;
+    chrome.storage.local.set({ optDiag: on }, () => {
+      status(on ? '诊断模式已开启：点优化只出报告' : '诊断模式已关闭', 2200);
+    });
+  });
+
+  /* 查看上次诊断报告 */
+  $('opt-diag-view').addEventListener('click', () => {
+    chrome.storage.local.get({ optLastReport: '' }, (r) => {
+      const out = $('opt-diag-out');
+      out.value = r.optLastReport || '（暂无报告：请先在 ChatGPT 页面点一次「优化」）';
+      if (r.optLastReport) {
+        out.select();
+        try { document.execCommand('copy'); status('报告已复制到剪贴板', 2000); }
+        catch (e) { status('已显示，请手动复制', 2000); }
+      }
+    });
+  });
 }
 
 document.addEventListener('DOMContentLoaded', init);

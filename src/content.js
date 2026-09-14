@@ -74,6 +74,99 @@
   }
   function getComposer() { return findComposer(); }
   function getText(box) { return (box ? (box.innerText || box.value || '') : ''); }
+
+  /* ============ 诊断（点优化时输出，供定位误报原因） ============ */
+  function btnInfo(el) {
+    const r = el.getBoundingClientRect();
+    return {
+      t: el.tagName.toLowerCase(),
+      id: el.id || '',
+      tid: el.getAttribute('data-testid') || '',
+      aria: (el.getAttribute('aria-label') || '').slice(0, 40),
+      busy: el.getAttribute('aria-busy') || '',
+      pressed: el.getAttribute('aria-pressed') || '',
+      dis: !!el.disabled,
+      hid: isHidden(el),
+      rect: Math.round(r.width) + 'x' + Math.round(r.height) + '@' + Math.round(r.x) + ',' + Math.round(r.y),
+      txt: (el.textContent || '').trim().slice(0, 18)
+    };
+  }
+  function buildReport() {
+    const box = getComposer();
+    const scope = composerScope(box);
+    const rep = {
+      时间: new Date().toLocaleTimeString(),
+      地址: location.href,
+      视口: window.innerWidth + 'x' + window.innerHeight,
+      会话状态: {
+        轮次数: turnNodes().length,
+        按钮文案: (document.getElementById('opt-fab') || {}).textContent,
+        按钮标题: (document.getElementById('opt-fab') || {}).title,
+        确认条存在: !!document.getElementById('opt-confirm'),
+        是否判定为在回复: isBusy(getComposer())
+      },
+      输入框: null,
+      判定用的停止按钮: null,
+      候选停止按钮: [],
+      输入框区域内所有按钮: [],
+      全页含stop或停止的按钮: []
+    };
+    if (box) {
+      const r = box.getBoundingClientRect();
+      rep.输入框 = {
+        命中: box.tagName + (box.getAttribute('role') ? '[role=' + box.getAttribute('role') + ']' : '') +
+          (box.className ? '.' + String(box.className).split(' ')[0] : ''),
+        内容: JSON.stringify((box.innerText || box.value || '').slice(0, 40)),
+        不可用: isHidden(box),
+        位置: Math.round(r.width) + 'x' + Math.round(r.height) + '@' + Math.round(r.x) + ',' + Math.round(r.y)
+      };
+    }
+    const stop = visibleStopBtn(box);
+    rep.判定用的停止按钮 = stop ? btnInfo(stop) : '无（应判定为"空闲"）';
+    rep.候选停止按钮 = $qa('button[data-testid="stop-button"], button[data-testid="composer-submit-button"], button[aria-label*="Stop" i], button[aria-label*="停止"]')
+      .slice(0, 8).map(btnInfo);
+    if (scope) rep.输入框区域内所有按钮 = Array.prototype.slice.call(scope.querySelectorAll('button')).slice(0, 15).map(btnInfo);
+    rep.全页含stop或停止的按钮 = $qa('button').filter(function (b) {
+      const k = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-testid') || '');
+      return /stop|停止/i.test(k);
+    }).slice(0, 8).map(function (b) {
+      const o = btnInfo(b);
+      o.在输入框区域内 = !!(scope && scope.contains(b));
+      return o;
+    });
+    /* 后端状态：能拿到 service worker 就直接问它 */
+    rep.后端 = '无响应（后台 service worker 可能已挂）';
+    return rep;
+  }
+  function finishDiagnostic(rep) {
+    const txt = JSON.stringify(rep, null, 2);
+    console.log('[OPT] 诊断报告:\n' + txt);
+    try { chrome.storage.local.set({ optLastReport: txt }); } catch (e) { }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).catch(function () { });
+    }
+    window.alert('【诊断模式】已记录，请截图发我：\n\n' + txt);
+  }
+  function runDiagnostic() {
+    let rep;
+    try { rep = buildReport(); }
+    catch (e) { rep = { 构建失败: String((e && e.message) || e) }; }
+    let settled = false;
+    const done = function () { if (!settled) { settled = true; finishDiagnostic(rep); } };
+    try {
+      chrome.runtime.sendMessage({ type: 'OPT_PING' }).then(function (r) {
+        rep.后端 = r || '后台无返回';
+        done();
+      }).catch(function (e) {
+        rep.后端 = '查询失败: ' + String((e && e.message) || e);
+        done();
+      });
+    } catch (e) {
+      rep.后端 = 'sendMessage 不可用: ' + String((e && e.message) || e);
+    }
+    setTimeout(done, 700); // 后台不响应也要出报告，否则点了没反应
+  }
+
   /* 找不到输入框时输出诊断（复制到剪贴板），供修正选择器 */
   function composerDiag() {
     const info = { url: location.href, readyState: document.readyState };
@@ -115,8 +208,43 @@
     box.dispatchEvent(new Event('input', { bubbles: true }));
     box.dispatchEvent(new Event('change', { bubbles: true }));
   }
-  function isBusy() {
-    return !!firstOf(SEL.stopBtn) || !firstOf(SEL.sendBtn);
+  /* 输入框所在区域（发送/停止按钮都在这里），用于把"是否在回复"的判断限定在 composer 附近，
+     避免全页扫描误扫到别的按钮。 */
+  function composerScope(box) {
+    if (!box) return null;
+    return box.closest('form') || box.parentElement || null;
+  }
+  function isHidden(el) {
+    try {
+      if (!el || !el.isConnected) return true;
+      for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+        if (n.getAttribute && n.getAttribute('aria-hidden') === 'true') return true;
+        if (typeof n.checkVisibility === 'function' && !n.checkVisibility()) return true;
+      }
+      if (el.disabled) return true;
+      return !visible(el);
+    } catch (e) {
+      return true; // 任何异常都按"不可用"处理，宁可漏判也不要误报
+    }
+  }
+  /* "正在回复"的判据：composer 附近存在【真实可见的停止按钮】。
+     绝不能用「找不到发送按钮」当判据 —— 发送按钮是条件渲染的，
+     输入框为空 / 新对话 / 输入法组字时它可能不存在，那样空白页点优化会误报。 */
+  function visibleStopBtn(box) {
+    const scope = composerScope(box) || document;
+    const direct = scope.querySelector('button[data-testid="stop-button"]') ||
+      scope.querySelector('button[data-testid="composer-submit-button"][aria-busy="true"]');
+    if (direct && !isHidden(direct)) return direct;
+    const btns = scope.querySelectorAll('button');
+    for (let i = 0; i < btns.length; i++) {
+      const b = btns[i];
+      const key = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-testid') || '');
+      if (/(^|\s)stop(\s|$)|停止/i.test(key) && !isHidden(b)) return b;
+    }
+    return null;
+  }
+  function isBusy(box) {
+    return !!visibleStopBtn(box);
   }
   function turnNodes() {
     for (let i = 0; i < SEL.turn.length; i++) {
@@ -231,7 +359,15 @@
   /* ---------------- 流程 ---------------- */
   function doOptimize() {
     if (state.running) return;
-    if (isBusy()) { window.alert('请等 ChatGPT 回复结束后再优化。'); return; }
+    /* 诊断模式：不改写，直接输出报告（在弹窗里打开此开关） */
+    try {
+      chrome.storage.local.get({ optDiag: false }, function (r) {
+        if (r && r.optDiag) { runDiagnostic(); return; }
+        proceedOptimize();
+      });
+    } catch (e) { proceedOptimize(); }
+  }
+  function proceedOptimize() {
     const box = getComposer();
     if (!box) {
       // 找不到输入框：输出诊断供修正
@@ -239,8 +375,11 @@
       window.alert('未找到 ChatGPT 输入框。已把页面输入框诊断复制到剪贴板（共 ' + d.length + ' 字符），请发给我以便修正。');
       return;
     }
+    /* 顺序很重要：先如实报告"输入为空"，再判断是否正在回复。
+       反过来会导致空白输入框点优化时弹出误导性的"请等回复结束"。 */
     const raw = getText(box);
     if (!raw.trim()) { window.alert('输入框为空：请先输入要优化的内容。'); return; }
+    if (isBusy(box)) { window.alert('ChatGPT 正在回复中，请等它回复结束后再点优化。'); return; }
     chrome.storage.local.get({ optMode: 'instant' }, function (r) {
       const mode = r.optMode === 'thinking' ? 'thinking' : 'instant';
       const hasHistory = turnNodes().length > 0;
