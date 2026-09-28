@@ -194,19 +194,49 @@
     }
     return txt;
   }
+  /* 写入文本：execCommand 优先（ProseMirror 只认这条路径），失败再退回直接赋值。
+     v1.1.0：新版 chatgpt.com 的 contenteditable 直接改 innerHTML 会被 React/ProseMirror
+     重渲染清掉，表现为"回复了但没回填"。 */
   function setText(text, box) {
     box = box || getComposer();
-    if (!box) return;
+    if (!box) return false;
     text = String(text || '');
+    const head = text.slice(0, Math.min(24, text.length));
     box.focus();
     if (box.isContentEditable) {
-      box.innerHTML = '';
-      box.appendChild(document.createTextNode(text));
+      let ok = false;
+      try {
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(box);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        ok = document.execCommand('insertText', false, text);
+      } catch (e) { ok = false; }
+      const cur = (box.innerText || box.textContent || '');
+      if (!ok || !cur.trim() || cur.indexOf(head) < 0) {
+        box.innerHTML = '';
+        box.appendChild(document.createTextNode(text));
+        try {
+          box.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+        } catch (e) {
+          box.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
     } else if (box.value !== undefined) {
-      box.value = text;
+      try {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(box, text);
+      } catch (e) { box.value = text; }
+      box.dispatchEvent(new Event('input', { bubbles: true }));
     }
-    box.dispatchEvent(new Event('input', { bubbles: true }));
     box.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  /* 宽松比较：innerText 常带尾换行/不换行空格，严格相等会把"没变过"误判成"已变化" */
+  function sameText(a, b) {
+    return String(a == null ? '' : a).replace(/\s+/g, ' ').trim() ===
+      String(b == null ? '' : b).replace(/\s+/g, ' ').trim();
   }
   /* 输入框所在区域（发送/停止按钮都在这里），用于把"是否在回复"的判断限定在 composer 附近，
      避免全页扫描误扫到别的按钮。 */
@@ -281,7 +311,85 @@
   }
 
   /* ---------------- 状态与 UI ---------------- */
-  const state = { running: false, lastRaw: '' };
+  const state = {
+    running: false,
+    lastRaw: '',
+    reqTs: 0,        // 本次请求发起时间：用于判断 storage 里的结果是新的还是上一轮的
+    appliedText: '', // 已回填过的结果，避免"消息 + storage"双通道重复回填
+    status: '',
+    watch: null
+  };
+  const WATCH_TIMEOUT = 5 * 60 * 1000; // 后台最多被等 5 分钟，避免"永远转圈"
+
+  function copyText(text, hint) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        window.alert(hint + '\n结果已复制到剪贴板。');
+      }, function () { window.alert(hint); });
+    } else {
+      window.alert(hint);
+    }
+  }
+  /* 双通道投递之「storage 通道」：后台把结果写进 optResult，
+     即使 sendResponse 因为 service worker 被回收而丢失，这里也能补上。 */
+  function startResultWatch() {
+    stopResultWatch();
+    const deadline = Date.now() + WATCH_TIMEOUT;
+    state.watch = setInterval(function () {
+      if (Date.now() > deadline) { stopResultWatch(); return; }
+      try {
+        chrome.storage.local.get({ optResult: null }, function (r) {
+          const o = r && r.optResult;
+          if (o && o.text && o.ts >= state.reqTs) applyResult(o.text, false);
+        });
+      } catch (e) { /* 忽略 */ }
+    }, 1200);
+  }
+  function stopResultWatch() {
+    if (state.watch) { clearInterval(state.watch); state.watch = null; }
+  }
+  /* 回填（幂等）：先判断输入框是否还是我们发起时的那段文字 */
+  function applyResult(text, force) {
+    const t = String(text || '').trim();
+    if (!t || state.appliedText === t) return false;
+    state.appliedText = t;
+    stopResultWatch();
+    const lastRaw = state.lastRaw;
+    resetFlight();
+    const box = getComposer();
+    if (!box) {
+      copyText(t, '优化完成，但没找到输入框，未回填。');
+      return true;
+    }
+    const current = getText(box);
+    if (sameText(current, t)) {
+      /* 后台已经直接粘贴进输入框了：只需补确认条 */
+      state.lastRaw = lastRaw;
+      showConfirmChip();
+      return true;
+    }
+    if (force || !current.trim() || sameText(current, lastRaw)) {
+      setText(t, box);
+      state.lastRaw = lastRaw; // 保留原文，供 Esc 还原
+      box.focus();
+      showConfirmChip();
+    } else {
+      copyText(t, '优化完成，但输入框内容已变化，未覆盖。');
+    }
+    return true;
+  }
+
+  /* 进度显示：把后台上报的步骤写在按钮上，用户能实时看到走到哪一步 */
+  function setStatus(text) {
+    state.status = text || '';
+    if (!fab) return;
+    if (fab.classList.contains('opt-running')) {
+      fab.textContent = '⏳ ' + state.status + '（点击取消）';
+    } else if (/^✗/.test(state.status)) {
+      fab.textContent = '✨优化 · 上次失败';
+      fab.title = state.status;
+    }
+  }
 
   let fab = null;
   /* 按钮跟随输入框：挂到输入框所在容器内，输入框重渲染后自动跟上 */
@@ -309,9 +417,14 @@
   }
   function setFab(running) {
     if (!fab) return;
-    fab.textContent = running ? '⏳优化中…（点击取消）' : '✨优化';
-    fab.title = running ? '点击取消（Esc 也可取消）' : '打开临时聊天自动改写当前输入并回填（Alt+O）';
     fab.classList.toggle('opt-running', running);
+    if (running) {
+      fab.textContent = '⏳ ' + (state.status || '正在优化…') + '（点击取消）';
+      fab.title = '点击取消（Esc 也可取消）';
+    } else {
+      fab.textContent = '✨优化';
+      fab.title = '打开临时聊天自动改写当前输入并回填（Alt+O）';
+    }
   }
 
   /* 确认条：回车确认 / Esc 还原（原版同款） */
@@ -386,62 +499,125 @@
       const chatContext = hasHistory ? conversationContext() : null;
       state.lastRaw = raw;
       state.running = true;
+      state.appliedText = '';
+      state.reqTs = Date.now();
+      state.status = '正在打开临时聊天…';
       setFab(true);
+      startResultWatch(); // 先开好 storage 通道：即便 sendResponse 丢了也能回填
       chrome.runtime.sendMessage({
         type: 'OPT_OPTIMIZE_PROMPT',
         prompt: raw,
         thinkingMode: mode,
-        chatContext: chatContext || undefined
+        chatContext: chatContext || undefined,
+        reqTs: state.reqTs
       })
         .then(function (resp) { handleResponse(resp); })
-        .catch(function (e) { handleError(e); });
+        .catch(function (e) { handleResponse(null, e); });
     });
   }
   function resetFlight() {
     state.running = false;
     setFab(false);
   }
-  function handleResponse(resp) {
-    if (!resp || resp.cancelled) { resetFlight(); state.lastRaw = null; return; }
-    if (!resp || !resp.ok) { handleError(new Error((resp && resp.error) || '优化失败')); return; }
-    const text = (resp.result || '').trim();
-    if (!text) { handleError(new Error('未获取到改写结果')); return; }
-    resetFlight();
-    const current = getText(getComposer());
-    if (current === state.lastRaw) {
-      setText(text);
-      showConfirmChip();
-    } else {
-      const hint = '优化完成，但输入框内容已变化，未覆盖。';
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () {
-          window.alert(hint + '结果已复制到剪贴板。');
-        }, function () { window.alert(hint); });
-      } else {
-        window.alert(hint);
-      }
+  function handleResponse(resp, err) {
+    /* storage 通道已经回填过了，消息通道就不用再管 */
+    if (state.appliedText) return;
+    if (resp && resp.cancelled) {
+      stopResultWatch();
+      resetFlight();
+      state.lastRaw = null;
+      state.status = '';
+      return;
     }
+    /* 没有返回体（service worker 被回收、消息端口关闭）：不当作失败，
+       继续等 storage 通道；按钮上写清楚，避免用户以为插件没反应。 */
+    if (!resp) {
+      state.status = '等待后台返回结果…';
+      setStatus(state.status);
+      return;
+    }
+    if (resp.ok) {
+      const text = String(resp.result || '').trim();
+      /* 后台已经直接写进输入框了（原版同款通道）：只补确认条，别再写一遍 */
+      if (resp.pasted && text) {
+        state.appliedText = text;   // 让 storage 通道别重复回填
+        stopResultWatch();
+        resetFlight();
+        if (getComposer()) { getComposer().focus(); showConfirmChip(); }
+        return;
+      }
+      if (text) { applyResult(text, false); return; }
+      stopResultWatch();
+      resetFlight();
+      copyText('', '优化完成，但没有拿到结果内容。');
+      return;
+    }
+    /* 失败：先查一次 storage，可能结果其实已经写进去了 */
+    chrome.storage.local.get({ optResult: null }, function (r) {
+      const o = r && r.optResult;
+      if (o && o.text && o.ts >= state.reqTs) { applyResult(o.text, false); return; }
+      handleError(new Error((resp && resp.error) || (err && err.message) || '优化失败'));
+    });
   }
   function handleError(err) {
+    stopResultWatch();
     resetFlight();
     if (err && err.message === 'cancelled') { state.lastRaw = null; return; }
     // 出错还原原文
     const box = getComposer();
-    if (box && state.lastRaw != null && getText(box) === state.lastRaw) {
+    if (box && state.lastRaw != null && sameText(getText(box), state.lastRaw)) {
       setText(state.lastRaw, box);
     }
     state.lastRaw = null;
+    state.status = '✗ ' + ((err && err.message) || '优化失败');
+    setStatus(state.status);
     window.alert((err && err.message) || '优化失败');
   }
   function cancelOptimize() {
     if (!state.running) return;
-    chrome.runtime.sendMessage({ type: 'OPT_CANCEL_OPTIMIZE' }).catch(function () {});
+    chrome.runtime.sendMessage({ type: 'OPT_CANCEL_OPTIMIZE' }).catch(function () { });
+    stopResultWatch();
+    state.appliedText = '';
     // 取消：还原原文
     if (state.lastRaw != null) {
       setText(state.lastRaw);
     }
     state.lastRaw = null;
+    state.status = '';
     resetFlight();
+  }
+
+  /* 双通道投递之「消息通道」：进度 + 回填（后台主动推） */
+  chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+    if (!msg || !msg.type) return;
+    if (msg.type === 'OPT_STATUS') {
+      if (state.running) setStatus(msg.text);
+      if (sendResponse) sendResponse({ ok: true });
+      return true;
+    }
+    if (msg.type === 'OPT_BACKFILL') {
+      /* 救援回填：用户在临时聊天页点了「填回原页面」，这里无条件覆盖并给确认条 */
+      state.lastRaw = state.lastRaw || getText(getComposer());
+      applyResult(msg.text, true);
+      if (sendResponse) sendResponse({ ok: true });
+      return true;
+    }
+  });
+
+  /* 打开页面时补一次：上一轮的结果写进了 storage 但当时页面已关闭/刷新 */
+  function pickupPendingResult() {
+    try {
+      chrome.storage.local.get({ optResult: null }, function (r) {
+        const o = r && r.optResult;
+        if (!o || !o.text) return;
+        if (Date.now() - (o.ts || 0) > 10 * 60 * 1000) return; // 只捡 10 分钟内的
+        const box = getComposer();
+        if (!box) return;
+        /* 只在输入框为空时补填，避免把用户正在写的内容冲掉 */
+        if (getText(box).trim()) return;
+        applyResult(o.text, true);
+      });
+    } catch (e) { /* 忽略 */ }
   }
 
   /* Esc 取消（运行中） */
@@ -459,16 +635,71 @@
     }
   }, true);
 
+  /* ---------------- 临时聊天页（worker）：救援回填按钮 ----------------
+     优化失败时临时聊天页会被保留，用户可以直接在那一页点按钮把回复填回发起页，
+     不用手动复制粘贴。 */
+  let rescue = null;
+  function isWorkerPage() {
+    if (location.search.indexOf('temporary-chat=true') >= 0) return true;
+    return !!(document.documentElement.getAttribute &&
+      document.documentElement.getAttribute('data-opt-worker'));
+  }
+  function lastAssistantText() {
+    const turns = $qa('div[data-message-author-role="assistant"]');
+    if (!turns.length) return '';
+    const last = turns[turns.length - 1];
+    const body = last.querySelector(SEL.turnBody.join(',')) || last;
+    return ((body.innerText || '').trim());
+  }
+  function attachRescue() {
+    if (rescue && rescue.parentElement) return;
+    if (!document.body) return;
+    rescue = document.createElement('button');
+    rescue.id = 'opt-rescue';
+    rescue.type = 'button';
+    rescue.textContent = '↩ 填回原页面';
+    rescue.title = '把本页最后一条回复填回发起优化的那个标签页输入框';
+    rescue.addEventListener('click', function () {
+      const text = lastAssistantText();
+      if (!text) { window.alert('本页还没有回复内容可回填。'); return; }
+      rescue.disabled = true;
+      rescue.textContent = '↩ 正在回填…';
+      chrome.runtime.sendMessage({ type: 'OPT_RESCUE', text: text }).then(function (r) {
+        if (!rescue) return;
+        rescue.disabled = false;
+        if (r && r.ok) {
+          rescue.textContent = '✓ 已填回原页面';
+        } else {
+          rescue.textContent = '↩ 填回原页面';
+          window.alert('回填失败：' + ((r && r.error) || '发起页可能已关闭'));
+        }
+        setTimeout(function () { if (rescue && !rescue.disabled) rescue.textContent = '↩ 填回原页面'; }, 2500);
+      }).catch(function () {
+        if (!rescue) return;
+        rescue.disabled = false;
+        rescue.textContent = '↩ 填回原页面';
+        window.alert('回填失败：后台无响应');
+      });
+    });
+    document.body.appendChild(rescue);
+  }
+
   /* ---------------- 启动 ---------------- */
   function boot() {
-    // 临时聊天页（后台驱动的 worker）不注入 UI
-    if (location.search.indexOf('temporary-chat=true') >= 0) return;
+    // 临时聊天页（后台驱动的 worker）：只放救援按钮，不注入优化按钮
+    if (isWorkerPage()) {
+      attachRescue();
+      setInterval(attachRescue, 2000);
+      return;
+    }
     attachFab();
-    // 每 2 秒：跟上输入框重渲染；若页面被标记为优化 worker（手动进入临时聊天）则移除 UI
+    pickupPendingResult();
+    // 每 2 秒：跟上输入框重渲染；若页面被标记为优化 worker（手动进入临时聊天）则换成救援按钮
     setInterval(function () {
-      if (document.documentElement.getAttribute && document.documentElement.getAttribute('data-opt-worker')) {
+      if (isWorkerPage()) {
         if (fab && fab.parentElement) fab.remove();
         if (chip && chip.parentElement) chip.remove();
+        attachRescue();
         return;
       }
       attachFab();

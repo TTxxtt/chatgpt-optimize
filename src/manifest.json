@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT 提示词优化（独立版）",
-  "version": "1.0.2",
-  "description": "只做一件事：点「优化」→ 打开官方临时聊天（可见、不留历史）→ 自动改写你的输入 → 回填确认。",
+  "version": "1.1.0",
+  "description": "只做一件事：点「优化」→ 打开官方临时聊天（可见、不留历史）→ 自动改写你的输入 → 回填确认（带进度显示与防丢失回填）。",
   "permissions": [
     "storage",
     "scripting"

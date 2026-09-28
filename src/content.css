@@ -32,3 +32,23 @@
   font: 600 13px/1.4 system-ui, sans-serif;
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
 }
+
+/* 临时聊天页（优化 worker）的救援回填按钮 */
+#opt-rescue {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2147483003;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  padding: 9px 18px;
+  font: 600 13px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: linear-gradient(135deg, #1d4ed8, #3b82f6);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+}
+#opt-rescue:hover { filter: brightness(1.08); }
+#opt-rescue:disabled { opacity: 0.7; cursor: default; }
+/* 优化进行中按钮文案会变长，允许换行、限制宽度避免撑坏输入框布局 */
+#opt-fab { max-width: 100%; white-space: normal; text-align: center; line-height: 1.25; }
