@@ -38,9 +38,10 @@ let _workerTabId = null;
 let _openerTabId = null;
 let _keepAlive = null;
 
+/* 原版同款：{{var}} 找不到就替换成空字符串（不是保留占位符） */
 function fillTemplate(tpl, vars) {
   return String(tpl).replace(/\{\{(\w+)\}\}/g, function (m, n) {
-    return (vars && vars[n] !== undefined) ? vars[n] : m;
+    return (vars && vars[n] != null) ? vars[n] : '';
   });
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

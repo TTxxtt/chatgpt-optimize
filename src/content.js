@@ -289,8 +289,16 @@
     s = String(s || '').trim();
     return s.length > max ? s.slice(0, max) + '…' : s;
   }
+  /* 原版同款：只有"已经在某个对话里"才带上下文（URL 是 /c/<id>），否则用新对话模板。
+     缺哪一项就传空字符串 —— 原版就是这样，不写"（无）"这种占位词。 */
+  const CHAT_PATH_RE = /^\/(?:g\/[^/]+\/)?c\/([^/]+)/;
+  function chatId() {
+    const m = location.pathname.match(CHAT_PATH_RE);
+    return m ? m[1] : null;
+  }
   /* 原版同款上下文：首/末用户消息 + 末助手正文，各 2000 字符 */
   function conversationContext() {
+    if (!chatId()) return null;
     const turns = turnNodes();
     const users = [], assists = [];
     turns.forEach(function (n) {
@@ -305,10 +313,11 @@
         if (text) assists.push(text);
       }
     });
+    if (!users.length) return null;
     return {
-      firstUser: users.length ? clip(users[0], 2000) : '（无）',
-      lastUser: users.length ? clip(users[users.length - 1], 2000) : '（无）',
-      lastAssistant: assists.length ? clip(assists[assists.length - 1], 2000) : '（无）'
+      firstUser: clip(users[0], 2000),
+      lastUser: clip(users[users.length - 1], 2000),
+      lastAssistant: clip(assists.length ? assists[assists.length - 1] : '', 2000)
     };
   }
 
@@ -539,8 +548,8 @@
     try {
       chrome.storage.local.get({ optMode: 'instant' }, function (r) {
         const mode = r && r.optMode === 'thinking' ? 'thinking' : 'instant';
-        const hasHistory = turnNodes().length > 0;
-        const chatContext = hasHistory ? conversationContext() : null;
+        /* 原版判定：能取到对话上下文才用"对话中模板"，否则用"新对话模板" */
+        const chatContext = conversationContext();
         state.lastRaw = raw;
         state.running = true;
         state.appliedText = '';
