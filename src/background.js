@@ -107,11 +107,17 @@ async function fillComposer(tabId, text) {
   const fn = async function (payload) {
     const txt = payload.txt;
     const sleepFn = (ms) => new Promise((r) => setTimeout(r, ms));
-    const pick = () => document.querySelector('div[contenteditable="true"].ProseMirror[role="textbox"]') ||
-      document.querySelector('textarea[aria-label="Chat with ChatGPT"]') ||
-      document.querySelector('#prompt-textarea') ||
-      document.querySelector('div[contenteditable="true"][role="textbox"]') ||
-      document.querySelector('main div[contenteditable="true"]');
+    const pick = () => {
+      /* 优先"看得见"的输入框：新版页面里会残留隐藏的同名节点，
+         写进隐藏节点会表现为"三种写法全部未生效"。 */
+      const list = Array.prototype.slice.call(document.querySelectorAll(
+        'div[contenteditable="true"].ProseMirror[role="textbox"], ' +
+        'textarea[aria-label="Chat with ChatGPT"], #prompt-textarea, ' +
+        'div[contenteditable="true"][role="textbox"], main div[contenteditable="true"]'
+      ));
+      const vis = list.filter((el) => el.offsetParent || el.getClientRects().length);
+      return vis[0] || list[0] || null;
+    };
     const read = (el) => (el ? (el.isContentEditable ? (el.innerText || el.textContent || '') : (el.value || '')) : '');
     const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
     /* 模板第一个词元：不含空白，换行怎么变都能匹配上 */
@@ -240,9 +246,15 @@ async function sendComposer(tabId, baseline) {
   const clickFn = async function (payload) {
     const base = payload.base || 0;
     const sleepFn = (ms) => new Promise((r) => setTimeout(r, ms));
-    const pick = () => document.querySelector('div[contenteditable="true"].ProseMirror[role="textbox"]') ||
-      document.querySelector('textarea[aria-label="Chat with ChatGPT"]') ||
-      document.querySelector('#prompt-textarea');
+    const pick = () => {
+      const list = Array.prototype.slice.call(document.querySelectorAll(
+        'div[contenteditable="true"].ProseMirror[role="textbox"], ' +
+        'textarea[aria-label="Chat with ChatGPT"], #prompt-textarea, ' +
+        'div[contenteditable="true"][role="textbox"], main div[contenteditable="true"]'
+      ));
+      const vis = list.filter((el) => el.offsetParent || el.getClientRects().length);
+      return vis[0] || list[0] || null;
+    };
     const read = (el) => (el ? (el.isContentEditable ? (el.innerText || '') : (el.value || '')) : '');
     const stop = () => Array.prototype.slice.call(document.querySelectorAll('button[aria-label]'))
       .some((b) => /stop|停止/i.test(b.getAttribute('aria-label') || '') &&
@@ -627,9 +639,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (_openerTabId != null) {
           const r = await scriptExec(_openerTabId, function (payload) {
             const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-            const pick = () => document.querySelector('div[contenteditable="true"].ProseMirror[role="textbox"]') ||
-              document.querySelector('textarea[aria-label="Chat with ChatGPT"]') ||
-              document.querySelector('#prompt-textarea');
+            const pick = () => {
+              const list = Array.prototype.slice.call(document.querySelectorAll(
+                'div[contenteditable="true"].ProseMirror[role="textbox"], ' +
+                'textarea[aria-label="Chat with ChatGPT"], #prompt-textarea, ' +
+                'div[contenteditable="true"][role="textbox"], main div[contenteditable="true"]'
+              ));
+              const vis = list.filter((el) => el.offsetParent || el.getClientRects().length);
+              return vis[0] || list[0] || null;
+            };
             const el = pick();
             if (!el) return 'no-composer';
             const cur = norm(el.isContentEditable ? el.innerText : el.value);
@@ -758,21 +776,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         let injected = false;
         if (!msgOk && target != null) {
           const r = await scriptExec(target, function (t) {
-            const pick = () => document.querySelector('div[contenteditable="true"].ProseMirror[role="textbox"]') ||
-              document.querySelector('textarea[aria-label="Chat with ChatGPT"]') ||
-              document.querySelector('#prompt-textarea');
+            const pick = () => {
+              const list = Array.prototype.slice.call(document.querySelectorAll(
+                'div[contenteditable="true"].ProseMirror[role="textbox"], ' +
+                'textarea[aria-label="Chat with ChatGPT"], #prompt-textarea, ' +
+                'div[contenteditable="true"][role="textbox"], main div[contenteditable="true"]'
+              ));
+              const vis = list.filter((el) => el.offsetParent || el.getClientRects().length);
+              return vis[0] || list[0] || null;
+            };
             const el = pick();
             if (!el) return false;
             el.focus();
             document.execCommand('selectAll');
             let ok = document.execCommand('insertText', false, t);
-            const read = () => String(el.isContentEditable ? (el.innerText || '') : (el.value || ''));
-            if (!ok || read().indexOf(t.slice(0, 20)) < 0) {
+            const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+            const probe = (norm(t).split(' ')[0] || '').slice(0, 14);
+            const read = () => norm(el.isContentEditable ? (el.innerText || '') : (el.value || ''));
+            if (!ok || (probe && read().indexOf(probe) < 0)) {
               if (el.isContentEditable) { el.innerHTML = ''; el.appendChild(document.createTextNode(t)); }
               else { el.value = t; }
               el.dispatchEvent(new Event('input', { bubbles: true }));
             }
-            return read().indexOf(t.slice(0, 20)) >= 0;
+            return !probe || read().indexOf(probe) >= 0;
           }, [text]);
           injected = r === true;
         }
