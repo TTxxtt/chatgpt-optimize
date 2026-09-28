@@ -145,7 +145,7 @@
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(txt).catch(function () { });
     }
-    window.alert('【诊断模式】已记录，请截图发我：\n\n' + txt);
+    toast('【诊断模式】报告已复制到剪贴板，请发我：\n' + txt, 20000);
   }
   function runDiagnostic() {
     let rep;
@@ -201,7 +201,9 @@
     box = box || getComposer();
     if (!box) return false;
     text = String(text || '');
-    const head = text.slice(0, Math.min(24, text.length));
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    /* 用"模板第一个词元"判定，不逐字比对：innerText 会按段落插换行 */
+    const probe = (norm(text).split(' ')[0] || '').slice(0, 14);
     box.focus();
     if (box.isContentEditable) {
       let ok = false;
@@ -213,8 +215,8 @@
         sel.addRange(range);
         ok = document.execCommand('insertText', false, text);
       } catch (e) { ok = false; }
-      const cur = (box.innerText || box.textContent || '');
-      if (!ok || !cur.trim() || cur.indexOf(head) < 0) {
+      const cur = norm(box.innerText || box.textContent || '');
+      if (!ok || !cur || (probe && cur.indexOf(probe) < 0)) {
         box.innerHTML = '';
         box.appendChild(document.createTextNode(text));
         try {
@@ -324,11 +326,34 @@
   function copyText(text, hint) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(function () {
-        window.alert(hint + '\n结果已复制到剪贴板。');
-      }, function () { window.alert(hint); });
+        toast(hint + '（结果已复制到剪贴板）', 7000);
+      }, function () { toast(hint, 7000); });
     } else {
-      window.alert(hint);
+      toast(hint, 7000);
     }
+  }
+  /* 页面内提示条：不用 window.alert —— 一旦用户勾过"阻止此页面创建更多对话框"，
+     alert 会被静音，表现就是"点了没反应"。自己画的条子一定会显示。 */
+  let toastEl = null;
+  let toastTimer = null;
+  function toast(msg, ms) {
+    try {
+      if (!toastEl) {
+        toastEl = document.createElement('div');
+        toastEl.id = 'opt-toast';
+        document.body.appendChild(toastEl);
+      }
+      toastEl.textContent = String(msg || '');
+      toastEl.classList.add('opt-toast-show');
+      if (toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () {
+        if (toastEl) toastEl.classList.remove('opt-toast-show');
+      }, ms || 5000);
+    } catch (e) { /* 极端情况下退回 alert */ try { window.alert(msg); } catch (e2) { } }
+  }
+  /* 扩展被更新/停用后，老页面里的脚本还活着但 chrome.* 已经不能用了 */
+  function ctxAlive() {
+    try { return !!(chrome && chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
   }
   /* 双通道投递之「storage 通道」：后台把结果写进 optResult，
      即使 sendResponse 因为 service worker 被回收而丢失，这里也能补上。 */
@@ -478,48 +503,68 @@
   /* ---------------- 流程 ---------------- */
   function doOptimize() {
     if (state.running) return;
-    /* 诊断模式：不改写，直接输出报告（在弹窗里打开此开关） */
+    if (!ctxAlive()) {
+      toast('扩展刚被更新或停用，本页面的旧脚本已失效：请按 F5 刷新本页面后再点「优化」。', 9000);
+      return;
+    }
+    /* 点下去先给反馈：无论如何都能看到按钮变了 */
+    if (fab) { fab.textContent = '⏳ 正在准备…'; }
+    const restore = function () { setFab(state.running); };
     try {
+      /* 诊断模式：不改写，直接输出报告（在弹窗里打开此开关） */
       chrome.storage.local.get({ optDiag: false }, function (r) {
-        if (r && r.optDiag) { runDiagnostic(); return; }
-        proceedOptimize();
+        if (r && r.optDiag) { restore(); runDiagnostic(); return; }
+        proceedOptimize(restore);
       });
-    } catch (e) { proceedOptimize(); }
+    } catch (e) {
+      restore();
+      toast('扩展上下文已失效：请刷新本页面（F5）后再点。', 9000);
+    }
   }
-  function proceedOptimize() {
+  function proceedOptimize(restore) {
+    restore = restore || function () { setFab(state.running); };
     const box = getComposer();
     if (!box) {
       // 找不到输入框：输出诊断供修正
       const d = composerDiag();
-      window.alert('未找到 ChatGPT 输入框。已把页面输入框诊断复制到剪贴板（共 ' + d.length + ' 字符），请发给我以便修正。');
+      restore();
+      toast('未找到 ChatGPT 输入框。已把页面输入框诊断复制到剪贴板（共 ' + d.length + ' 字符），请发给我以便修正。', 9000);
       return;
     }
     /* 顺序很重要：先如实报告"输入为空"，再判断是否正在回复。
        反过来会导致空白输入框点优化时弹出误导性的"请等回复结束"。 */
     const raw = getText(box);
-    if (!raw.trim()) { window.alert('输入框为空：请先输入要优化的内容。'); return; }
-    if (isBusy(box)) { window.alert('ChatGPT 正在回复中，请等它回复结束后再点优化。'); return; }
-    chrome.storage.local.get({ optMode: 'instant' }, function (r) {
-      const mode = r.optMode === 'thinking' ? 'thinking' : 'instant';
-      const hasHistory = turnNodes().length > 0;
-      const chatContext = hasHistory ? conversationContext() : null;
-      state.lastRaw = raw;
-      state.running = true;
-      state.appliedText = '';
-      state.reqTs = Date.now();
-      state.status = '正在打开临时聊天…';
-      setFab(true);
-      startResultWatch(); // 先开好 storage 通道：即便 sendResponse 丢了也能回填
-      chrome.runtime.sendMessage({
-        type: 'OPT_OPTIMIZE_PROMPT',
-        prompt: raw,
-        thinkingMode: mode,
-        chatContext: chatContext || undefined,
-        reqTs: state.reqTs
-      })
-        .then(function (resp) { handleResponse(resp); })
-        .catch(function (e) { handleResponse(null, e); });
-    });
+    if (!raw.trim()) { restore(); toast('输入框为空：请先输入要优化的内容。'); return; }
+    if (isBusy(box)) { restore(); toast('ChatGPT 正在回复中，请等它回复结束后再点优化。'); return; }
+    try {
+      chrome.storage.local.get({ optMode: 'instant' }, function (r) {
+        const mode = r && r.optMode === 'thinking' ? 'thinking' : 'instant';
+        const hasHistory = turnNodes().length > 0;
+        const chatContext = hasHistory ? conversationContext() : null;
+        state.lastRaw = raw;
+        state.running = true;
+        state.appliedText = '';
+        state.reqTs = Date.now();
+        state.status = '正在打开临时聊天…';
+        setFab(true);
+        startResultWatch(); // 先开好 storage 通道：即便 sendResponse 丢了也能回填
+        try {
+          chrome.runtime.sendMessage({
+            type: 'OPT_OPTIMIZE_PROMPT',
+            prompt: raw,
+            thinkingMode: mode,
+            chatContext: chatContext || undefined,
+            reqTs: state.reqTs
+          })
+            .then(function (resp) { handleResponse(resp); })
+            .catch(function (e) { handleResponse(null, e); });
+        } catch (e) {
+          handleError(new Error('扩展上下文已失效，请刷新页面（F5）后重试'));
+        }
+      });
+    } catch (e) {
+      handleError(new Error('扩展上下文已失效，请刷新页面（F5）后重试'));
+    }
   }
   function resetFlight() {
     state.running = false;
@@ -575,9 +620,16 @@
       setText(state.lastRaw, box);
     }
     state.lastRaw = null;
-    state.status = '✗ ' + ((err && err.message) || '优化失败');
+    const msg = (err && err.message) || '优化失败';
+    state.status = '✗ ' + msg;
     setStatus(state.status);
-    window.alert((err && err.message) || '优化失败');
+    /* 失败详情通常很长（含现场诊断），顺手复制到剪贴板，方便直接粘给我 */
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText && msg.length > 30) {
+        navigator.clipboard.writeText('[优化失败] ' + msg).catch(function () { });
+      }
+    } catch (e) { /* 忽略 */ }
+    toast('优化失败：' + msg + (msg.length > 30 ? '\n（详情已复制到剪贴板，可直接粘给我）' : ''), 15000);
   }
   function cancelOptimize() {
     if (!state.running) return;
@@ -665,7 +717,7 @@
     rescue.title = '把本页最后一条回复填回发起优化的那个标签页输入框';
     rescue.addEventListener('click', function () {
       const text = lastAssistantText();
-      if (!text) { window.alert('本页还没有回复内容可回填。'); return; }
+      if (!text) { toast('本页还没有回复内容可回填。'); return; }
       rescue.disabled = true;
       rescue.textContent = '↩ 正在回填…';
       chrome.runtime.sendMessage({ type: 'OPT_RESCUE', text: text }).then(function (r) {
@@ -675,14 +727,14 @@
           rescue.textContent = '✓ 已填回原页面';
         } else {
           rescue.textContent = '↩ 填回原页面';
-          window.alert('回填失败：' + ((r && r.error) || '发起页可能已关闭'));
+          toast('回填失败：' + ((r && r.error) || '发起页可能已关闭'));
         }
         setTimeout(function () { if (rescue && !rescue.disabled) rescue.textContent = '↩ 填回原页面'; }, 2500);
       }).catch(function () {
         if (!rescue) return;
         rescue.disabled = false;
         rescue.textContent = '↩ 填回原页面';
-        window.alert('回填失败：后台无响应');
+        toast('回填失败：后台无响应');
       });
     });
     document.body.appendChild(rescue);

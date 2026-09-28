@@ -99,7 +99,10 @@ async function closeWorker() {
   if (id != null) { try { await chrome.tabs.remove(id); } catch (e) { /* 可能已被关 */ } }
 }
 
-/* 写入文本：多策略 + 验证 */
+/* 写入文本：多策略 + 抗换行校验
+   校验不再逐字比对模板开头（innerText 在 ProseMirror 里会按段落插换行，
+   逐字比对必然失败，会误判成"写入失败"，然后清空重写反而把内容抹掉）。
+   判定标准：① 归一化空白后包含模板首个词元（如 <task>）；② 文本长度明显增长。 */
 async function fillComposer(tabId, text) {
   const fn = async function (payload) {
     const txt = payload.txt;
@@ -110,33 +113,95 @@ async function fillComposer(tabId, text) {
       document.querySelector('div[contenteditable="true"][role="textbox"]') ||
       document.querySelector('main div[contenteditable="true"]');
     const read = (el) => (el ? (el.isContentEditable ? (el.innerText || el.textContent || '') : (el.value || '')) : '');
-    const head = txt.slice(0, Math.min(24, txt.length));
+    const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+    /* 模板第一个词元：不含空白，换行怎么变都能匹配上 */
+    const probe = (norm(txt).split(' ')[0] || '').slice(0, 14);
+    const want = Math.min(20, txt.trim().length);
     const notes = [];
+
     const el0 = pick();
     if (!el0) return { ok: false, detail: 'composer not found' };
-    el0.focus();
-    // A) execCommand
-    try {
-      document.execCommand('selectAll');
-      document.execCommand('insertText', false, txt);
-      await sleepFn(150);
-      if (read(pick()).indexOf(head) >= 0) return { ok: true, strategy: 'execCommand', detail: notes.join(' | ') };
-      notes.push('execCommand 未生效');
-    } catch (e) { notes.push('execCommand 异常:' + e.message); }
-    // B) 粘贴事件
+    const beforeLen = read(pick()).length;
+
+    /* execCommand 在"文档没有焦点"时会静默失败（比如 Chrome 窗口不在最前面）。
+       先尽量把焦点抢过来，抢不到就在诊断里如实写出来。 */
+    const focusInfo = () => {
+      let act = '?';
+      try {
+        const a = document.activeElement;
+        act = a ? (a.tagName.toLowerCase() + (a.id ? '#' + a.id : '') +
+          (a.className && typeof a.className === 'string' ? '.' + a.className.split(' ')[0] : '')) : 'null';
+      } catch (e) { /* 忽略 */ }
+      return 'hasFocus=' + (document.hasFocus ? document.hasFocus() : '?') + ' active=' + act;
+    };
+    try { window.focus(); } catch (e) { /* 忽略 */ }
+    for (let i = 0; i < 12 && document.hasFocus && !document.hasFocus(); i++) await sleepFn(250);
+
+    const check = (tag) => {
+      const el = pick();
+      const cur = read(el);
+      const n = norm(cur);
+      /* 归一化空白后包含模板首个词元 → 写进去了 */
+      if (probe && n.indexOf(probe) >= 0) return { ok: true, strategy: tag, detail: notes.join(' | ') };
+      /* 模板开头没有可辨识词元时，退一步：长度明显增长也算成功 */
+      if (cur.length > beforeLen + 10 && cur.length >= want) {
+        return { ok: true, strategy: tag + '(仅长度)', detail: notes.join(' | ') };
+      }
+      return null;
+    };
+    /* 写进去还不算数：页面 hydrate 完成时 ProseMirror 会把 DOM 重挂一遍，
+       刚插进去的文字会被清掉。隔 500ms 再确认一次，被清掉就换下一招。 */
+    const stableCheck = async (tag) => {
+      const first = check(tag);
+      if (!first) return null;
+      await sleepFn(500);
+      const again = check(tag);
+      if (again) return again;
+      notes.push(tag + ' 写入后被页面清掉（疑似还没 hydrate）');
+      return null;
+    };
+
+    // A) execCommand（原版同款，ProseMirror 认这条路径）
     try {
       const el = pick() || el0;
       el.focus();
       document.execCommand('selectAll');
-      document.execCommand('delete');
+      document.execCommand('insertText', false, txt);
+      await sleepFn(200);
+      let r = await stableCheck('execCommand');
+      if (!r) {
+        /* 等页面稳定后重试一次 */
+        await sleepFn(1500);
+        const el2 = pick() || el0;
+        el2.focus();
+        document.execCommand('selectAll');
+        document.execCommand('insertText', false, txt);
+        await sleepFn(250);
+        r = await stableCheck('execCommand重试');
+      }
+      if (r) return r;
+      notes.push('execCommand 未生效(len=' + read(pick()).length + ')');
+    } catch (e) { notes.push('execCommand 异常:' + e.message); }
+
+    // B) 合成粘贴事件（ProseMirror 的 paste 处理器会读 clipboardData）
+    try {
+      const el = pick() || el0;
+      el.focus();
+      const cur = norm(read(el));
+      if (cur && cur.indexOf(probe) < 0) {
+        document.execCommand('selectAll');
+        document.execCommand('delete');
+      }
       const dt = new DataTransfer();
       dt.setData('text/plain', txt);
       el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-      await sleepFn(200);
-      if (read(pick()).indexOf(head) >= 0) return { ok: true, strategy: 'paste', detail: notes.join(' | ') };
-      notes.push('paste 未生效');
+      await sleepFn(250);
+      const r = await stableCheck('paste');
+      if (r) return r;
+      notes.push('paste 未生效(len=' + read(pick()).length + ')');
     } catch (e) { notes.push('paste 异常:' + e.message); }
-    // C) 直接赋值 + input
+
+    // C) 直接赋值 + input 事件
     try {
       const el = pick() || el0;
       el.focus();
@@ -148,10 +213,20 @@ async function fillComposer(tabId, text) {
         setter.call(el, txt);
         el.dispatchEvent(new Event('input', { bubbles: true }));
       }
-      await sleepFn(200);
-      if (read(pick()).indexOf(head) >= 0) return { ok: true, strategy: 'setter', detail: notes.join(' | ') };
-      notes.push('setter 未生效');
+      await sleepFn(250);
+      const r = await stableCheck('setter');
+      if (r) return r;
+      notes.push('setter 未生效(len=' + read(pick()).length + ')');
     } catch (e) { notes.push('setter 异常:' + e.message); }
+
+    /* 失败时把现场情况带回去，方便定位（含选中元素的样子） */
+    const el = pick();
+    const rect = el ? el.getBoundingClientRect() : null;
+    notes.push('现场: <' + (el ? el.tagName.toLowerCase() : '?') +
+      ' class=' + (el && el.className ? String(el.className).slice(0, 40) : '') +
+      ' editable=' + (el ? el.isContentEditable : '?') +
+      ' vis=' + (rect ? Math.round(rect.width) + 'x' + Math.round(rect.height) : '?') +
+      ' len=' + read(el).length + '> ' + focusInfo());
     return { ok: false, detail: notes.join(' | ') };
   };
   return await scriptExec(tabId, fn, [{ txt: text }]);
@@ -170,7 +245,8 @@ async function sendComposer(tabId, baseline) {
       document.querySelector('#prompt-textarea');
     const read = (el) => (el ? (el.isContentEditable ? (el.innerText || '') : (el.value || '')) : '');
     const stop = () => Array.prototype.slice.call(document.querySelectorAll('button[aria-label]'))
-      .some((b) => /stop|停止/i.test(b.getAttribute('aria-label') || ''));
+      .some((b) => /stop|停止/i.test(b.getAttribute('aria-label') || '') &&
+        (b.offsetParent || b.getClientRects().length));
     const started = () => !!window.__optSseStarted || stop() ||
       document.querySelectorAll('div[data-message-author-role="assistant"]').length > base;
     /* 等按钮渲染出来再点：新版是条件渲染，刚写好文本时按钮可能还没出现 */
@@ -390,8 +466,11 @@ async function countAssistant(tabId) {
 /* 取最后一条助手回复；生成中（停止按钮在）不采样，避免抓到半截 */
 async function readLastAssistant(tabId, baseline) {
   return scriptExec(tabId, function (base) {
+    /* 只有"真实可见"的停止按钮才算生成中：新版页面里隐藏的按钮也会留在 DOM 里，
+       不判可见性的话 DOM 兜底会永远等不到结果。 */
     const stop = Array.prototype.slice.call(document.querySelectorAll('button[aria-label]'))
-      .find((b) => /stop|停止/i.test(b.getAttribute('aria-label') || ''));
+      .find((b) => /stop|停止/i.test(b.getAttribute('aria-label') || '') &&
+        (b.offsetParent || b.getClientRects().length));
     if (stop) return null;
     const turns = document.querySelectorAll('div[data-message-author-role="assistant"]');
     if (turns.length <= base) return null;
@@ -442,6 +521,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
              document.querySelector('textarea[aria-label="Chat with ChatGPT"]') ||
              document.querySelector('#prompt-textarea')) || null
         ), { timeout: 15000, interval: 400 });
+        /* 输入框出现 ≠ 页面 hydrate 完成：再等一拍，避免刚写进去的文字被重挂 DOM 清掉 */
+        await sleep(700);
         if (_abort) { await closeWorker(); sendResponse({ cancelled: true }); stopKeepAlive(); return; }
 
         const isTemp = await scriptExec(tab.id, () => /temporary-chat=true/.test(location.search));
@@ -449,6 +530,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await installFetchHook(tab.id);
 
         reportStatus('③ 正在写入模板…');
+        /* 让窗口和临时聊天页都真正拿到焦点：execCommand 依赖 document 有焦点，
+           窗口在后台时它会静默失败（表现就是"三种写法全都没生效"）。 */
+        try {
+          if (openerTab && openerTab.windowId != null) {
+            await chrome.windows.update(openerTab.windowId, { focused: true });
+          }
+          await chrome.tabs.update(tab.id, { active: true });
+          await sleep(250);
+        } catch (e) { /* 忽略 */ }
         const fill = await fillComposer(tab.id, finalMsg);
         if (!fill || !fill.ok) {
           const detail = (fill && fill.detail) || '未知原因';

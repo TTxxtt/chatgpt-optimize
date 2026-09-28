@@ -52,3 +52,25 @@
 #opt-rescue:disabled { opacity: 0.7; cursor: default; }
 /* 优化进行中按钮文案会变长，允许换行、限制宽度避免撑坏输入框布局 */
 #opt-fab { max-width: 100%; white-space: normal; text-align: center; line-height: 1.25; }
+
+/* 页面内提示条（替代 window.alert，不会被"阻止对话框"静音） */
+#opt-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%) translateY(12px);
+  z-index: 2147483004;
+  max-width: min(720px, 92vw);
+  background: #111827;
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  padding: 11px 18px;
+  font: 500 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  white-space: pre-wrap;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+#opt-toast.opt-toast-show { opacity: 1; transform: translateX(-50%) translateY(0); }
