@@ -606,6 +606,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  /* 领回结果：发起页刷新后输入框空了，把还没被领走的结果补上。
+     只有当初发起优化的那个标签页才能领（避免在别的标签页乱填）。 */
+  if (msg.type === 'OPT_CLAIM_RESULT') {
+    (async () => {
+      try {
+        const st = await chrome.storage.local.get({ optResult: null, optOpenerTabId: null });
+        const o = st.optResult;
+        const from = sender && sender.tab ? sender.tab.id : null;
+        const sameTab = from != null &&
+          ((st.optOpenerTabId != null && from === st.optOpenerTabId) ||
+            (_openerTabId != null && from === _openerTabId));
+        const fresh = !!(o && o.text && Date.now() - (o.ts || 0) < 10 * 60 * 1000);
+        if (fresh && sameTab && !o.claimed) {
+          await chrome.storage.local.set({ optResult: Object.assign({}, o, { claimed: true }) });
+          sendResponse({ ok: true, text: o.text, how: o.how || '', pastedBefore: !!o.pasted });
+        } else {
+          sendResponse({ ok: true, text: '' });
+        }
+      } catch (e) {
+        sendResponse({ ok: false, text: '', error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
+
   /* 诊断用：内容脚本问后台"你还在吗、上一步走到哪" */
   if (msg.type === 'OPT_PING') {
     (async () => {

@@ -430,6 +430,10 @@
   /* 确认条：回车确认 / Esc 还原（原版同款） */
   let chip = null;
   let chipKey = null;
+  /* 结果已经被确认/还原后清掉存档，避免下次打开页面又被补填一遍 */
+  function clearStoredResult() {
+    try { chrome.storage.local.set({ optResult: null }); } catch (e) { /* 忽略 */ }
+  }
   function showConfirmChip() {
     if (document.getElementById('opt-confirm')) return;
     chip = document.createElement('div');
@@ -449,6 +453,7 @@
           e.stopPropagation();
           clearConfirmChip();
           state.lastRaw = null;
+          clearStoredResult();
         }
       }
     };
@@ -467,6 +472,7 @@
     }
     state.lastRaw = null;
     clearConfirmChip();
+    clearStoredResult();
   }
 
   /* ---------------- 流程 ---------------- */
@@ -604,19 +610,17 @@
     }
   });
 
-  /* 打开页面时补一次：上一轮的结果写进了 storage 但当时页面已关闭/刷新 */
+  /* 打开/刷新页面时补一次：上一轮的结果还在，但当时页面已经关了或刷新了。
+     只向后台"领"（后台会确认这就是发起优化的那个标签页）。 */
   function pickupPendingResult() {
     try {
-      chrome.storage.local.get({ optResult: null }, function (r) {
-        const o = r && r.optResult;
-        if (!o || !o.text) return;
-        if (Date.now() - (o.ts || 0) > 10 * 60 * 1000) return; // 只捡 10 分钟内的
+      if (!getComposer() || getText(getComposer()).trim()) return;
+      chrome.runtime.sendMessage({ type: 'OPT_CLAIM_RESULT' }).then(function (r) {
+        if (!r || !r.text) return;
         const box = getComposer();
-        if (!box) return;
-        /* 只在输入框为空时补填，避免把用户正在写的内容冲掉 */
-        if (getText(box).trim()) return;
-        applyResult(o.text, true);
-      });
+        if (!box || getText(box).trim()) return; // 用户已经自己写了东西，别动
+        applyResult(r.text, true);
+      }).catch(function () { });
     } catch (e) { /* 忽略 */ }
   }
 
